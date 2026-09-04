@@ -15,6 +15,9 @@ ARGS=(--backbone vlmr1
   --config "${CRVG_CONFIG:-configs/default.yaml}"
   --datasets "${DATASET_ARGS[@]}"
   --batch-size "${BATCH_SIZE:-4}"
+  --backbone-batch-size "${BACKBONE_BATCH_SIZE:-1}"
+  --backbone-max-tokens "${BACKBONE_MAX_TOKENS:-256}"
+  --backbone-seed "${BACKBONE_SEED:-42}"
   --backbone-python "${CRVG_BACKBONE_PYTHON:-$PYTHON}"
   --verifier-python "${CRVG_VERIFIER_PYTHON:-$PYTHON}"
   --stop-after "${STOP_AFTER:-final}")

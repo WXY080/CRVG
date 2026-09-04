@@ -61,12 +61,18 @@ def main():
     parser.add_argument("--gate", type=float)
     parser.add_argument("--gamma1", type=float)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--backbone-batch-size", type=int, default=1)
+    parser.add_argument("--backbone-max-tokens", type=int, default=256)
+    parser.add_argument("--backbone-seed", type=int, default=42)
+    parser.add_argument("--internvl-max-tiles", type=int, default=12)
     parser.add_argument("--backbone-python", default=sys.executable)
     parser.add_argument("--verifier-python", default=sys.executable)
     parser.add_argument("--stop-after", choices=("bon", "ece", "qwen", "dino", "pairwise", "final"), default="final")
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if min(args.batch_size, args.backbone_batch_size, args.backbone_max_tokens, args.internvl_max_tiles) < 1:
+        parser.error("Batch sizes, token limit and tile limit must be positive")
     if not args.candidate_cache_dir and (args.backbone == "padt" or not args.model_path or not args.data_root):
         parser.error("Use --candidate-cache-dir for PaDT, or supply --model-path and --data-root for backbone generation")
     if args.stop_after == "final" and not args.controller:
@@ -82,6 +88,9 @@ def main():
         parser.error("Require 0 < gamma1 <= gamma0 <= 1.01 and gate in [0,1]")
     log = Path(args.log_dir).resolve()
     log.mkdir(parents=True, exist_ok=True)
+    engine_args = ["--backbone-batch-size", args.backbone_batch_size,
+                   "--max-tokens", args.backbone_max_tokens, "--seed", args.backbone_seed,
+                   "--internvl-max-tiles", args.internvl_max_tiles]
     def stage(module, argv, inputs, outputs, interpreter=sys.executable):
         run_stage(module, argv, inputs, outputs, interpreter, args.rebuild, args.dry_run)
     for dataset in args.datasets:
@@ -104,13 +113,15 @@ def main():
             stage(f"crvg.candidate_generation.{args.backbone}_bon",
               ["--model-path", args.model_path, "--data-root", args.data_root, "--image-root", args.image_root,
                "--datasets", dataset, "--output-dir", log, "--bon-n", config["bon_n"],
-               "--bon-temperature", config["bon_temperature"]],
+               "--bon-temperature", config["bon_temperature"],
+               "--chunk-size", args.backbone_batch_size, *engine_args],
               [Path(args.data_root)/f"{dataset}.json"], [base], args.backbone_python)
         if args.stop_after == "bon": continue
         if not args.candidate_cache_dir:
             stage("crvg.candidate_generation.ece",
               ["--model-path", args.model_path, "--backbone", args.backbone, "--input", base, "--save", ece,
-               "--image-root", args.image_root, "--agree-skip-iou", g0, "--pad-factor", config["pad_factor"]],
+               "--image-root", args.image_root, "--agree-skip-iou", g0,
+               "--pad-factor", config["pad_factor"], *engine_args],
               [base], [ece], args.backbone_python)
         stage("tools.merge_ece", ["--base", base, "--ece", ece, "--output", expanded,
                                  "--dedup-iou", config["dedup_iou"], "--cluster-iou", config["ece_cluster_iou"],

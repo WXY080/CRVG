@@ -42,6 +42,10 @@ Controller labels follow Section 3.4: SWITCH corrects an Acc@0.50 error or impro
 
 ## Implementation Settings
 
+VLM-R1 uses `AutoModelForImageTextToText` with a left-padded processor batch. Original InternVL3-9B uses `AutoModel`, its native `batch_chat`, and ImageNet-normalized dynamic tiles (up to 12 tiles plus a thumbnail). It runs in the dedicated Transformers 4.44.2 environment; VLM-R1 and the evidence models use 4.57.6. Both interfaces implement the same image-major `predict()` output contract.
+
+Backbone generation uses one beam and a repetition penalty of 1. Greedy decoding disables sampling; stochastic decoding sets temperature 1.3, top-p 1, and top-k 0. Input microbatches default to one image and also bound ECE view batches. Generation settings and seeds are recorded in the pipeline commands; matching seeds do not imply identical outputs across engines or batching configurations.
+
 The manuscript fixes the route thresholds, view transforms, clustering thresholds, model families, detection thresholds (0.20/0.20), and detection/challenger limits (12/8). Supplementary code settings include eight additional stochastic decodes, sampling temperature 1.3, DINO append-dedup IoU 0.92, and a 960x750 montage. Every appended challenger is compared; no further overlap filter removes it before comparison. The feature order and auxiliary confidence indicator are defined explicitly in FEATURE_NAMES and extract_feature_vector; these are part of the controller checkpoint contract.
 
 Ablation overrides are recorded separately from the default configuration. Existing score files may be reused only when their source and processing contracts match. Backbone weights and benchmark data are obtained from their official sources; the frozen controller and the controller-development example lists are included in this repository.

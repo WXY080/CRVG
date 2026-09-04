@@ -32,7 +32,19 @@ python -m pip install -e ".[inference,analysis]"
 python -m pip check
 ```
 
-This installs every dependency used by the code: PyTorch, Transformers (pinned to **4.57.6**), accelerate, Pillow, tqdm, numpy, PyYAML, and matplotlib. Backbone generation and verification use the same Transformers stack, so a single environment is sufficient; the pipeline scripts also accept separate interpreters for the backbone and verifier stages (`CRVG_BACKBONE_PYTHON`, `CRVG_VERIFIER_PYTHON`).
+This environment runs VLM-R1, Qwen3 verification, Grounding-DINO, and analysis using Transformers **4.57.6**.
+
+The original **OpenGVLab/InternVL3-9B** checkpoint uses its native `AutoModel`/`AutoTokenizer` interface and requires a separate Transformers **4.44.2** environment. With a CUDA-enabled PyTorch build installed in that environment, install `.[internvl]` instead of `.[inference]`. For example, from the repository root:
+
+```bash
+export CRVG_VERIFIER_PYTHON="$(command -v python)"
+python3.11 -m venv ../crvg-internvl
+../crvg-internvl/bin/python -m pip install -e ".[internvl]"
+../crvg-internvl/bin/python -m pip check
+export CRVG_BACKBONE_PYTHON="$(cd ../crvg-internvl/bin && pwd)/python"
+```
+
+The pipeline calls both interpreters automatically; no environment switching is needed between stages. InternVL uses dynamic image tiling and standard attention, without requiring FlashAttention. Converted `-hf` InternVL checkpoints are not interchangeable with the original checkpoint interface.
 
 ## Data
 
@@ -81,6 +93,8 @@ GPU=0 DATASETS="refcoco_val" bash pipelines/run_internvl.sh
 ```
 
 For VLM-R1, set its checkpoint and use `pipelines/run_vlmr1.sh`. Run manifests record configuration, source-code hashes, and input/output hashes. Use `--rebuild` after changing checkpoint contents at the same path.
+
+`BACKBONE_BATCH_SIZE` (default **1**) controls the number of images per generation call in both BoN and ECE. `BATCH_SIZE` (default **4**) controls Qwen and DINO separately. Sampling generates eight completions per input, so increase the backbone batch size only when GPU memory permits. `BACKBONE_MAX_TOKENS`, `BACKBONE_SEED`, and `INTERNVL_MAX_TILES` default to 256, 42, and 12. When moving from InternVL to VLM-R1, unset `CRVG_BACKBONE_PYTHON` or point it to the Transformers 4.57.6 environment.
 
 ### PaDT Candidate Input
 
