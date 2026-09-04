@@ -1,0 +1,231 @@
+{
+  "method": "Three-domain DINO KEEP/SWITCH/ABSTAIN risk data",
+  "feature_names": [
+    "qwen_current_probability",
+    "qwen_alternative_probability",
+    "qwen_alternative_advantage",
+    "qwen_permutation_agree",
+    "qwen_permutation_logit_gap",
+    "qwen_above_frozen_g06",
+    "dino_phrase_score",
+    "spatial_skill_score",
+    "current_alternative_iou",
+    "current_area_fraction",
+    "alternative_area_fraction",
+    "log_area_ratio",
+    "current_center_x",
+    "current_center_y",
+    "alternative_center_x",
+    "alternative_center_y",
+    "center_delta_x",
+    "center_delta_y",
+    "center_distance",
+    "challenger_count_log",
+    "existing_candidate_count_log",
+    "qwen_rank",
+    "dino_rank",
+    "qwen_competitor_margin",
+    "dino_competitor_margin",
+    "existing_pool_min_iou",
+    "expression_token_count_log",
+    "cue_spatial",
+    "cue_ordinal",
+    "cue_attribute",
+    "cue_color",
+    "requires_anchor",
+    "anchor_confidence",
+    "domain_refcoco",
+    "domain_refcoco_plus",
+    "domain_refcocog"
+  ],
+  "labels": [
+    "keep",
+    "switch",
+    "abstain"
+  ],
+  "expected_domains": [
+    "refcoco",
+    "refcoco+",
+    "refcocog"
+  ],
+  "config": {
+    "val_ratio": 0.2,
+    "seed": 42,
+    "threshold": 0.5,
+    "refine_gap": 0.15,
+    "repair_split": true,
+    "train_minimums_per_domain": {
+      "total": 150,
+      "switch": 20,
+      "keep": 40,
+      "abstain": 40
+    },
+    "val_minimums_per_domain": {
+      "total": 40,
+      "switch": 5,
+      "keep": 10,
+      "abstain": 10
+    }
+  },
+  "sources": [
+    {
+      "name": "stratified",
+      "evidence": "dino_onpolicy_pairwise_evidence.json",
+      "picks": "dino_pairwise_stratified_stage1_picks.json",
+      "domain": "auto",
+      "stats": {
+        "domain_recovered_from_index": 1558,
+        "label_keep": 1465,
+        "domain_refcoco": 796,
+        "rows_scored": 1353,
+        "label_abstain": 1805,
+        "domain_refcocog": 1968,
+        "label_switch": 470,
+        "domain_refcoco+": 976,
+        "no_scored_challenger": 205,
+        "examples": 3740
+      }
+    },
+    {
+      "name": "natural",
+      "evidence": "dino_pairwise_natural_evidence.json",
+      "picks": "dino_pairwise_natural_stage1_picks.json",
+      "domain": "auto",
+      "stats": {
+        "domain_recovered_from_index": 252,
+        "label_abstain": 233,
+        "domain_refcoco": 103,
+        "rows_scored": 219,
+        "label_switch": 56,
+        "domain_refcocog": 304,
+        "label_keep": 272,
+        "domain_refcoco+": 154,
+        "no_scored_challenger": 33,
+        "examples": 561
+      }
+    }
+  ],
+  "domain_index": {
+    "paths": [
+      "padt_greedy_train_full.jsonl"
+    ],
+    "stats": {
+      "rows_seen": 297667,
+      "missing_key": 6,
+      "usable_keys": 297661
+    }
+  },
+  "stats": {
+    "unknown_domain_rows": 0,
+    "non_train_rows": 0,
+    "raw_examples": 4301,
+    "duplicates_removed": 0,
+    "examples": 4301,
+    "domain_refcoco": 899,
+    "label_keep": 1737,
+    "domain_refcocog": 2272,
+    "label_abstain": 2038,
+    "label_switch": 526,
+    "domain_refcoco+": 1130
+  },
+  "train": {
+    "refcoco": {
+      "examples": 734,
+      "samples": 294,
+      "images": 238,
+      "labels": {
+        "keep": 258,
+        "switch": 75,
+        "abstain": 401
+      }
+    },
+    "refcoco+": {
+      "examples": 919,
+      "samples": 366,
+      "images": 282,
+      "labels": {
+        "keep": 376,
+        "switch": 81,
+        "abstain": 462
+      }
+    },
+    "refcocog": {
+      "examples": 1849,
+      "samples": 622,
+      "images": 489,
+      "labels": {
+        "keep": 809,
+        "switch": 268,
+        "abstain": 772
+      }
+    }
+  },
+  "val": {
+    "refcoco": {
+      "examples": 165,
+      "samples": 67,
+      "images": 55,
+      "labels": {
+        "keep": 45,
+        "switch": 22,
+        "abstain": 98
+      }
+    },
+    "refcoco+": {
+      "examples": 211,
+      "samples": 74,
+      "images": 61,
+      "labels": {
+        "keep": 75,
+        "switch": 21,
+        "abstain": 115
+      }
+    },
+    "refcocog": {
+      "examples": 423,
+      "samples": 149,
+      "images": 112,
+      "labels": {
+        "keep": 174,
+        "switch": 59,
+        "abstain": 190
+      }
+    }
+  },
+  "split_repair": {
+    "moved_to_train": [],
+    "moved_to_val": []
+  },
+  "checks": {
+    "all_rows_are_train": true,
+    "domain_index_is_train_only": true,
+    "all_domains_known": true,
+    "no_image_leakage": true,
+    "feature_schema": true,
+    "train_refcoco_total": true,
+    "val_refcoco_total": true,
+    "train_refcoco_keep": true,
+    "val_refcoco_keep": true,
+    "train_refcoco_switch": true,
+    "val_refcoco_switch": true,
+    "train_refcoco_abstain": true,
+    "val_refcoco_abstain": true,
+    "train_refcoco+_total": true,
+    "val_refcoco+_total": true,
+    "train_refcoco+_keep": true,
+    "val_refcoco+_keep": true,
+    "train_refcoco+_switch": true,
+    "val_refcoco+_switch": true,
+    "train_refcoco+_abstain": true,
+    "val_refcoco+_abstain": true,
+    "train_refcocog_total": true,
+    "val_refcocog_total": true,
+    "train_refcocog_keep": true,
+    "val_refcocog_keep": true,
+    "train_refcocog_switch": true,
+    "val_refcocog_switch": true,
+    "train_refcocog_abstain": true,
+    "val_refcocog_abstain": true
+  },
+  "passed": true
+}
