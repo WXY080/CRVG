@@ -172,14 +172,14 @@ class CoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"completed ECE/Qwen"):
             dino_route(row,.35)
 
-    def test_consensus_feature_uses_frozen_b1_state(self):
+    def test_consensus_feature_uses_existing_pool(self):
         row,record=case()
         row["crvg"].update(b1_count=5,b1_min_iou=.21)
         data,picks=evidence([row],[record])
         example=build_risk_examples(data,picks,"test")[0][0]
         values=dict(zip(FEATURE_NAMES,example["features"]))
-        self.assertAlmostEqual(values["existing_pool_min_iou"],.21)
-        self.assertAlmostEqual(values["existing_candidate_count_log"],math.log1p(5))
+        self.assertAlmostEqual(values["existing_pool_min_iou"],iou_xywh(A,C))
+        self.assertAlmostEqual(values["existing_candidate_count_log"],math.log1p(2))
 
     def test_unknown_evidence_schema_rejected(self):
         row,record=case()

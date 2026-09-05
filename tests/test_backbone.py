@@ -128,13 +128,15 @@ class BackboneTests(unittest.TestCase):
         self.assertEqual([len(batch["input_ids"]) for batch in processor.batches], [2, 2])
         self.assertTrue(all(not call["do_sample"] and call["num_return_sequences"] == 1 for call in model.calls))
 
-    def test_vlmr1_boxes_are_restored_to_original_image_coordinates(self):
+    def test_vlmr1_boxes_are_absolute_original_image_pixels(self):
         module, _, processor = factories()
         processor.grid_override = [[1, 2, 2]]
         with patch.dict(sys.modules, {"transformers": module}):
             engine = BackboneEngine("synthetic", "vlmr1")
         output = engine.predict([Image.new("RGB", (56, 84), (1, 0, 0))], ["object"])
-        self.assertEqual(output[0][0]["bbox"], [20.0, 0.0, 20.0, 30.0])
+        # VLM-R1 answers in absolute pixel xyxy on the original image; the
+        # processor grid must not rescale them.
+        self.assertEqual(output[0][0]["bbox"], [10.0, 0.0, 10.0, 10.0])
 
     def test_original_internvl_uses_native_loader_and_tiled_batch_chat(self):
         module, model, processor = factories("4.44.2")

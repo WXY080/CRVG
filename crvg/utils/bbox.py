@@ -23,18 +23,6 @@ def xyxy_to_xywh(b):
     return [b[0], b[1], b[2] - b[0], b[3] - b[1]]
 
 
-def rescale_xyxy(bbox, source_size, target_size):
-    """Map an xyxy box between pixel coordinate systems."""
-    source_w, source_h = map(float, source_size)
-    target_w, target_h = map(float, target_size)
-    if not all(math.isfinite(value) and value > 0
-               for value in (source_w, source_h, target_w, target_h)):
-        raise ValueError("Source and target image sizes must be finite and positive")
-    x1, y1, x2, y2 = map(float, bbox)
-    return [x1 * target_w / source_w, y1 * target_h / source_h,
-            x2 * target_w / source_w, y2 * target_h / source_h]
-
-
 def min_pairwise_iou(boxes):
     """Minimum pairwise IoU across a list of xywh boxes (consistency signal)."""
     if len(boxes) < 2:

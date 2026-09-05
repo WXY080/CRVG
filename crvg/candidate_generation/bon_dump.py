@@ -12,7 +12,6 @@ from tqdm import tqdm
 from crvg.utils.bbox import (
     iou_xywh,
     norm1000_to_pixel_xywh,
-    rescale_xyxy,
     valid_box,
     xyxy_to_xywh,
 )
@@ -73,10 +72,6 @@ class BackboneEngine:
             self.model = AutoModelForImageTextToText.from_pretrained(
                 model_path, trust_remote_code=True, torch_dtype=torch.bfloat16,
                 device_map={"": 0}).eval()
-            vision_config = config_value(self.model.config, "vision_config", {})
-            self.vision_patch_size = float(config_value(vision_config, "patch_size", 14))
-            if not math.isfinite(self.vision_patch_size) or self.vision_patch_size <= 0:
-                raise ValueError("VLM-R1 vision patch size must be finite and positive")
         self.model.requires_grad_(False)
         from transformers import GenerationConfig
         decoder = self.model.language_model if backbone == "internvl" else self.model
@@ -101,7 +96,6 @@ class BackboneEngine:
         if temperature == 0 and n != 1:
             raise ValueError("Greedy decoding requires n=1")
         texts = []
-        vlmr1_input_sizes = []
         for start in range(0, len(images), self.batch_size):
             batch = images[start:start + self.batch_size]
             prompts = [self.prompt(expression) for expression in expressions[start:start + self.batch_size]]
@@ -121,26 +115,12 @@ class BackboneEngine:
             else:
                 inputs = self.processor(text=prompts, images=batch, padding=True,
                                         return_tensors="pt").to(self.model.device)
-                grid = inputs.get("image_grid_thw")
-                if grid is None or len(grid) != len(batch) or grid.shape[-1] != 3:
-                    raise ValueError(
-                        "VLM-R1 processor must return one image_grid_thw row per input image"
-                    )
-                input_sizes = [
-                    (float(item[2]) * self.vision_patch_size,
-                     float(item[1]) * self.vision_patch_size)
-                    for item in grid.detach().cpu()
-                ]
                 output = self.model.generate(**inputs, **kwargs)
                 generated = output[:, inputs["input_ids"].shape[1]:]
                 batch_texts = self.processor.batch_decode(generated, skip_special_tokens=True)
             if len(batch_texts) != len(batch) * n:
                 raise RuntimeError("Backbone output count mismatch")
             texts.extend(batch_texts)
-            if self.kind == "vlmr1":
-                vlmr1_input_sizes.extend(
-                    input_size for input_size in input_sizes for _ in range(n)
-                )
         if len(texts) != len(images) * n:
             raise RuntimeError("Backbone output count mismatch")
         batches = []
@@ -151,8 +131,8 @@ class BackboneEngine:
                 if self.kind == "internvl":
                     box = norm1000_to_pixel_xywh(coords, *image.size)
                 else:
-                    source_size = vlmr1_input_sizes[index * n + completion_index]
-                    box = xyxy_to_xywh(rescale_xyxy(coords, source_size, image.size))
+                    # VLM-R1 answers in absolute pixel xyxy on the original image.
+                    box = xyxy_to_xywh(coords)
                 valid = valid_box(box)
                 entries.append({"bbox": box if valid else [0., 0., 0., 0.],
                                 "valid": valid, "score": 0., "response": completion})

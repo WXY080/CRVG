@@ -206,9 +206,6 @@ def _candidate_extra(row, bbox):
 
 
 def _min_existing_iou(row):
-    state = row.get("crvg", {})
-    if "b1_min_iou" in state and "b1_count" in state:
-        return float(state["b1_min_iou"]), int(state["b1_count"])
     boxes = [
         candidate.get("bbox")
         for candidate in row.get("candidates", [])
