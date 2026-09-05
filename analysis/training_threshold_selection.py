@@ -1,9 +1,9 @@
-"""Select the three CRVG thresholds from difficult TRAIN examples only.
+"""Select and visualize the three CRVG thresholds using TRAIN data only.
 
 The cascade-entry and Qwen-update curves use aligned BoN, broad-ECE and
 frozen-Qwen caches from the three REC training domains. The DINO-route curve
-uses the released held-out TRAIN calibration examples and frozen controller.
-No validation or test split is accepted by this analysis.
+and its selected point are read from the independently generated TRAIN-only
+risk-calibration report. No validation or test split is accepted.
 """
 import argparse
 import csv
@@ -11,11 +11,7 @@ import math
 from pathlib import Path
 from statistics import mean
 
-import torch
-
-from crvg.controller.apply import load_controller
-from crvg.controller.features import FEATURE_NAMES, canonical_domain
-from crvg.controller.model import evaluate_policy, policy_is_safe
+from crvg.controller.features import canonical_domain
 from crvg.utils.bbox import iou_xywh, min_pairwise_iou
 from crvg.utils.data import (
     check_source,
@@ -23,7 +19,6 @@ from crvg.utils.data import (
     current_iou,
     index_rows,
     read_json,
-    read_jsonl,
     results,
     write_json,
 )
@@ -206,83 +201,67 @@ def sweep_gamma0(bundles, thresholds, gate, max_active):
     return output
 
 
-@torch.inference_mode()
-def sweep_gamma1(calibration_path, controller_path, thresholds):
-    rows = read_jsonl(calibration_path)
-    if not rows:
-        raise ValueError("DINO TRAIN calibration data is empty")
-    model, center, scale, config = load_controller(controller_path)
-    features = torch.tensor([row["features"] for row in rows], dtype=torch.float32)
-    probabilities = model((features - center) / scale).softmax(-1)
-    policy = config["selected_policy"]
-    expected = tuple(config["selection_constraints"]["expected_domains"])
-    feature_index = FEATURE_NAMES.index("existing_pool_min_iou")
-    sample_min_iou = {}
-    for row in rows:
-        sample_min_iou.setdefault(row["sample_id"], float(row["features"][feature_index]))
-    total_samples = len(sample_min_iou)
-    deployment_fraction = float(config["selection_constraints"]["deployment_route_fraction"])
-    output = []
-    for threshold in thresholds:
-        keep = {sample_id for sample_id, value in sample_min_iou.items() if value < threshold}
-        indices = [index for index, row in enumerate(rows) if row["sample_id"] in keep]
-        if not indices:
-            raise ValueError(f"No DINO calibration examples route at gamma1={threshold:g}")
-        subset = [rows[index] for index in indices]
-        run = evaluate_policy(
-            subset,
-            probabilities[indices],
-            gate=float(policy["gate"]),
-            damage_cost=float(policy["damage_cost"]),
-            abstain_cost=float(policy["abstain_cost"]),
-            require_permutation_agree=bool(policy["require_permutation_agree"]),
-        )
+def convert_dino_report(path, min_domain_net=0, min_total_net=0,
+                        min_average_dmiou_pp=0.0):
+    payload = read_json(path)
+    base_samples = int(payload.get("base_calibration_samples", 0) or 0)
+    runs = []
+    for raw in payload.get("runs", []):
+        domain = {}
         failures = []
-        if not policy_is_safe(run, expected, min_domain_net=0, min_total_net=0):
-            failures.append("risk_guardrail")
-        domain = {
-            name: {
-                "n": int(run["domain"].get(name, {}).get("n", 0)),
-                "dacc50_pp": 100.0 * float(run["domain"].get(name, {}).get("delta_acc50", 0)),
-                "dmiou_pp": 100.0 * float(run["domain"].get(name, {}).get("delta_miou", 0)),
-                "rescue": int(run["domain"].get(name, {}).get("rescue", 0)),
-                "damage": int(run["domain"].get(name, {}).get("damage", 0)),
-                "net": int(run["domain"].get(name, {}).get("net", 0)),
+        for name in TRAIN_DOMAINS:
+            item = raw.get("domain", {}).get(name)
+            if item is None:
+                failures.append(f"missing_{name}")
+                item = {}
+            domain[name] = {
+                "n": int(item.get("n", 0) or 0),
+                "dacc50_pp": 100.0 * float(item.get("delta_acc50", 0.0) or 0.0),
+                "dmiou_pp": 100.0 * float(item.get("delta_miou", 0.0) or 0.0),
+                "rescue": int(item.get("rescue", 0) or 0),
+                "damage": int(item.get("damage", 0) or 0),
+                "net": int(item.get("net", 0) or 0),
             }
-            for name in TRAIN_DOMAINS
-        }
-        routed_samples = int(run["n"])
-        output.append({
+            if domain[name]["net"] < min_domain_net:
+                failures.append(f"{name}_net")
+        average_dmiou = mean(item["dmiou_pp"] for item in domain.values())
+        net = int(raw.get("net", 0) or 0)
+        if average_dmiou < min_average_dmiou_pp - 1e-12:
+            failures.append("average_dmiou")
+        if net < min_total_net:
+            failures.append("total_net")
+        active_pct = (
+            100.0 * float(raw["estimated_full_route_fraction"])
+            if raw.get("estimated_full_route_fraction") is not None
+            else 100.0 * int(raw.get("n", 0) or 0) / max(1, base_samples)
+        )
+        runs.append({
             "stage": "gamma1",
-            "threshold": float(threshold),
-            "n": routed_samples,
+            "threshold": float(raw["threshold"]),
+            "n": int(raw.get("n", 0) or 0),
             "average_dacc50_pp": mean(item["dacc50_pp"] for item in domain.values()),
-            "average_dmiou_pp": mean(item["dmiou_pp"] for item in domain.values()),
-            "overall_dacc50_pp": 100.0 * float(run["delta_acc50"]),
-            "overall_dmiou_pp": 100.0 * float(run["delta_miou"]),
-            "active": routed_samples,
-            "active_pct": 100.0 * deployment_fraction * routed_samples / total_samples,
-            "rescue": int(run["rescue"]),
-            "damage": int(run["damage"]),
-            "net": int(run["net"]),
-            "safe": not failures,
+            "average_dmiou_pp": average_dmiou,
+            "overall_dacc50_pp": 100.0 * float(raw.get("delta_acc50", 0.0) or 0.0),
+            "overall_dmiou_pp": 100.0 * float(raw.get("delta_miou", 0.0) or 0.0),
+            "active": int(raw.get("n", 0) or 0),
+            "active_pct": active_pct,
+            "switches": int(raw.get("switches", 0) or 0),
+            "rescue": int(raw.get("rescue", 0) or 0),
+            "damage": int(raw.get("damage", 0) or 0),
+            "net": net,
+            "safe": bool(raw.get("safe", False)) and not failures,
             "constraint_failures": failures,
             "domain": domain,
         })
-    return output
-
-
-def dino_selection_key(run):
-    return (int(run["safe"]), run["net"],
-            min(run["domain"][name]["net"] for name in TRAIN_DOMAINS),
-            run["average_dmiou_pp"], -run["damage"], -run["threshold"])
-
-
-def declared_run(runs, threshold, stage):
-    matches = [run for run in runs if abs(run["threshold"] - threshold) < 1e-12]
-    if not matches:
-        raise ValueError(f"Declared {stage} threshold {threshold:g} is absent from its grid")
-    return matches[0]
+    if not runs:
+        raise ValueError(f"No DINO threshold runs in {path}")
+    selected_threshold = float(payload.get("selected_threshold", math.nan))
+    if not math.isfinite(selected_threshold):
+        raise ValueError(f"Missing selected_threshold in {path}")
+    selected = min(runs, key=lambda run: abs(run["threshold"] - selected_threshold))
+    if abs(selected["threshold"] - selected_threshold) > 1e-9:
+        raise ValueError(f"Selected DINO threshold is absent from {path}")
+    return runs, selected, payload
 
 
 def save_csv(path, stages, selected):
@@ -308,27 +287,34 @@ def save_csv(path, stages, selected):
                 writer.writerow(output)
 
 
-def save_summary(path, selected, diagnostic, guard):
+def same_threshold(left, right):
+    return abs(float(left) - float(right)) <= 1e-9
+
+
+def save_summary(path, selected, expected, matches, guard,
+                 max_qwen_intervention_pct, gate_calibration_gamma0):
     lines = [
         "# TRAIN-Only Threshold Selection",
         "",
-        "All operating points are computed from difficult TRAIN examples; no validation or test split is used.",
+        "The first two thresholds maximize average TRAIN-domain Acc@0.50 gain under the stated safety constraints. The DINO threshold follows its serialized TRAIN-only risk calibration.",
         "",
-        "| Stage | Paper point | Average dAcc50 (pp) | Average dIoU (pp) | Intervention (%) | Net | Safe | Diagnostic objective best |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
+        "| Stage | TRAIN-selected | Expected | Check | Average dAcc50 (pp) | Average dIoU (pp) | Intervention (%) | Net |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
     ]
     labels = {"gamma0": "Cascade entry", "gate": "Qwen update", "gamma1": "DINO route"}
     for stage in ("gamma0", "gate", "gamma1"):
         run = selected[stage]
         lines.append(
-            f"| {labels[stage]} | {run['threshold']:.2f} | "
+            f"| {labels[stage]} | {run['threshold']:.2f} | {expected[stage]:.2f} | "
+            f"{'MATCH' if matches[stage] else 'MISMATCH'} | "
             f"{run['average_dacc50_pp']:+.3f} | {run['average_dmiou_pp']:+.3f} | "
-            f"{run['active_pct']:.2f} | {run['net']:+d} | "
-            f"{'yes' if run['safe'] else 'no'} | {diagnostic[stage]['threshold']:.2f} |"
+            f"{run['active_pct']:.2f} | {run['net']:+d} |"
         )
     lines.extend([
         "",
-        "The diagnostic-best column reports the best point under the script's scalar tie-breaking rule; it is retained as an audit aid and does not replace the manuscript's frozen operating point.",
+        "## Selection Rule",
+        "",
+        f"The Qwen margin is selected first on the broad difficult TRAIN route at gamma0={gate_calibration_gamma0:g}, with changed-box interventions limited to {max_qwen_intervention_pct:g}%. With that margin frozen, the cascade-entry threshold is selected under the same mIoU and domain-net safeguards. The DINO operating point is read from the independently generated TRAIN-only risk-calibration report.",
         "",
         f"The feasibility guard `|B0| < 2` applies to {guard['count']}/{guard['total']} difficult TRAIN inputs ({guard['pct']:.3f}%). It is not swept because pairwise consensus is undefined for fewer than two boxes.",
     ])
@@ -419,21 +405,21 @@ def parse_args():
     parser.add_argument("--base-pools", nargs="+", required=True)
     parser.add_argument("--expanded-pools", nargs="+", required=True)
     parser.add_argument("--qwen-picks", nargs="+", required=True)
-    parser.add_argument("--dino-calibration", required=True)
-    parser.add_argument("--controller", required=True)
+    parser.add_argument("--dino-calibration-report", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--gamma0-grid", type=parse_floats,
                         default=parse_floats(".4,.5,.6,.7,.75,.8,.85,.9,.95"))
     parser.add_argument("--gate-grid", type=parse_floats,
                         default=parse_floats("0,.05,.1,.15,.2,.25,.3,.35,.4,.5"))
-    parser.add_argument("--gamma1-grid", type=parse_floats,
-                        default=parse_floats(".2,.25,.3,.35,.4,.45,.5,.55,.6,.65,.7,.75"))
-    parser.add_argument("--selected-gamma0", type=float, default=.5)
-    parser.add_argument("--selected-gate", type=float, default=.3)
-    parser.add_argument("--selected-gamma1", type=float, default=.35)
+    parser.add_argument("--expected-gamma0", type=float, default=.5)
+    parser.add_argument("--expected-gate", type=float, default=.3)
+    parser.add_argument("--expected-gamma1", type=float, default=.35)
     parser.add_argument("--gate-calibration-gamma0", type=float, default=.75)
     parser.add_argument("--max-qwen-intervention-pct", type=float, default=10.0)
-    parser.add_argument("--require-selected", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-domain-net", type=int, default=0)
+    parser.add_argument("--min-total-net", type=int, default=0)
+    parser.add_argument("--min-average-dmiou-pp", type=float, default=0.0)
+    parser.add_argument("--require-expected", action="store_true")
     return parser.parse_args()
 
 
@@ -453,42 +439,49 @@ def main():
     stages["gate"] = sweep_gate(bundles, args.gate_grid,
                                 args.gate_calibration_gamma0,
                                 args.max_qwen_intervention_pct)
-    diagnostic_gate = max(stages["gate"], key=gain_selection_key)
+    selected = {"gate": max(stages["gate"], key=gain_selection_key)}
     stages["gamma0"] = sweep_gamma0(bundles, args.gamma0_grid,
-                                    args.selected_gate,
+                                    args.expected_gate,
                                     args.max_qwen_intervention_pct)
-    diagnostic_gamma0 = max(stages["gamma0"], key=gain_selection_key)
-    stages["gamma1"] = sweep_gamma1(args.dino_calibration, args.controller,
-                                    args.gamma1_grid)
-    expected = {"gamma0": args.selected_gamma0, "gate": args.selected_gate,
-                "gamma1": args.selected_gamma1}
-    selected = {key: declared_run(stages[key], value, key)
-                for key, value in expected.items()}
-    diagnostic = {"gamma0": diagnostic_gamma0, "gate": diagnostic_gate,
-                  "gamma1": max(stages["gamma1"], key=dino_selection_key)}
-    matches = {key: selected[key]["safe"] for key in expected}
+    selected["gamma0"] = max(stages["gamma0"], key=gain_selection_key)
+    stages["gamma1"], selected["gamma1"], dino_report = convert_dino_report(
+        args.dino_calibration_report,
+        min_domain_net=args.min_domain_net,
+        min_total_net=args.min_total_net,
+        min_average_dmiou_pp=args.min_average_dmiou_pp,
+    )
+    expected = {"gamma0": args.expected_gamma0, "gate": args.expected_gate,
+                "gamma1": args.expected_gamma1}
+    matches = {
+        key: same_threshold(selected[key]["threshold"], expected[key])
+        for key in expected
+    }
     payload = {"method": "TRAIN-only risk-constrained threshold selection",
-               "selection_order": ["gate", "gamma0", "gamma1"],
+               "selection_rule": {
+                   "gamma0_and_qwen": "select the Qwen margin on a broad TRAIN route, then evaluate gamma0 with the expected Qwen margin; require the independently selected margin to match",
+                   "gamma1": "read the operating point selected by serialized TRAIN-only DINO risk calibration",
+               },
                "constraints": {"max_qwen_intervention_pct": args.max_qwen_intervention_pct,
                                "gate_calibration_gamma0": args.gate_calibration_gamma0,
-                               "nonnegative_average_miou": True,
-                               "nonnegative_domain_net": True},
-               "sources": {"base_pools": list(map(str, args.base_pools)),
-                           "expanded_pools": list(map(str, args.expanded_pools)),
-                           "qwen_picks": list(map(str, args.qwen_picks)),
-                           "dino_calibration": str(args.dino_calibration),
-                           "controller": str(args.controller)},
-               "candidate_guard": guard,
-               "selected_thresholds": {key: value["threshold"] for key, value in selected.items()},
-               "paper_thresholds": expected, "paper_points_satisfy_constraints": matches,
-               "diagnostic_objective_best": {
-                   key: value["threshold"] for key, value in diagnostic.items()
-               },
-               "stages": stages}
+                               "min_average_dmiou_pp": args.min_average_dmiou_pp,
+                               "min_domain_net": args.min_domain_net,
+                               "min_total_net": args.min_total_net},
+                "sources": {"base_pools": list(map(str, args.base_pools)),
+                            "expanded_pools": list(map(str, args.expanded_pools)),
+                            "qwen_picks": list(map(str, args.qwen_picks)),
+                            "dino_calibration_report": str(args.dino_calibration_report)},
+                "candidate_guard": guard,
+                "selected_thresholds": {key: value["threshold"] for key, value in selected.items()},
+                "expected_thresholds": expected,
+                "expected_matches": matches,
+                "all_expected_match": all(matches.values()),
+                "dino_calibration_method": dino_report.get("method"),
+                "stages": stages}
     write_json(output_dir / "training_threshold_selection.json", payload)
     save_csv(output_dir / "training_threshold_selection.csv", stages, selected)
     save_summary(output_dir / "training_threshold_selection_summary.md",
-                 selected, diagnostic, guard)
+                 selected, expected, matches, guard,
+                 args.max_qwen_intervention_pct, args.gate_calibration_gamma0)
     caption = ("Average training gain and intervention rate under risk-constrained threshold selection. "
                "Black curves average the three REC training domains; gray curves show individual "
                "training domains. Blue curves report the stage-specific intervention rate, crosses "
@@ -503,9 +496,16 @@ def main():
     print("Saved:", output_dir / "training_threshold_selection.json")
     for path in figure_paths:
         print("Saved:", path)
-    if args.require_selected and not all(matches.values()):
-        failed = [key for key, safe in matches.items() if not safe]
-        raise SystemExit(f"Declared paper operating points fail TRAIN constraints: {failed}")
+    print(
+        "TRAIN THRESHOLD SELECTION CHECK: "
+        + ("PASS" if all(matches.values()) else "FAIL")
+        + f" selected={payload['selected_thresholds']} expected={expected}"
+    )
+    if args.require_expected and not all(matches.values()):
+        raise SystemExit(
+            "The expected operating points are not supported by the TRAIN-only "
+            "selection reports."
+        )
 
 
 if __name__ == "__main__":

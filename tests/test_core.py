@@ -18,6 +18,7 @@ from crvg.controller.features import FEATURE_NAMES, build_risk_examples, image_g
 from crvg.utils.bbox import iou_xywh, norm1000_to_pixel_xywh
 from crvg.utils.data import index_rows, fingerprint, set_prediction
 from crvg.verification.apply_gate import apply_crop
+from crvg.verification.crop_verifier import crop_with_context
 from crvg.verification.dino_detector import dino_route, proposal_pool
 from crvg.verification.pairwise import aligned_scores
 from crvg.verification.render import render_pairwise_relation_montage
@@ -89,6 +90,13 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(dino_route(selected,.35))
         selected = apply_crop(source,picks,gate=.249)["results"][0]
         self.assertEqual(selected["pred_bbox"], B)
+
+    def test_crop_matches_padt_minimum_context_window(self):
+        image = Image.new("RGB", (100, 100), "white")
+        crop = crop_with_context(image, [49, 49, 2, 2], context=0)
+        self.assertEqual(crop.size, (56, 56))
+        tiny = crop_with_context(image, [49, 49, 1, 2], context=0)
+        self.assertEqual(tiny.size, image.size)
 
     def test_early_exit_restores_pre_ece_current(self):
         row, _ = case()

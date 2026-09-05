@@ -17,8 +17,8 @@ Default thresholds **gamma0=0.50 / gate=0.30 / gamma1=0.35** live in [configs/de
 | Path | Contents |
 | --- | --- |
 | `checkpoints/dino_three_domain_risk_controller/` | Frozen final-stage decision policy used in the reported experiments. |
-| `artifacts/controller_data/dino_three_domain_risk_train.jsonl` | 3,502 current-challenger examples from 1,282 difficult TRAIN inputs. |
-| `artifacts/controller_data/dino_three_domain_risk_calibration.jsonl` | 799 examples from 290 held-out TRAIN inputs used for policy selection. |
+| `artifacts/controller_data/dino_three_domain_risk_train.jsonl` | TRAIN-only current-challenger examples for the released policy. |
+| `artifacts/controller_data/dino_three_domain_risk_calibration.jsonl` | Held-out TRAIN examples used to select the released operating policy. |
 | `artifacts/controller_data/dino_three_domain_risk_audit.json` | Data composition and integrity statistics. |
 
 ## Installation
@@ -32,19 +32,7 @@ python -m pip install -e ".[inference,analysis]"
 python -m pip check
 ```
 
-This environment runs VLM-R1, Qwen3 verification, Grounding-DINO, and analysis using Transformers **4.57.6**.
-
-The original **OpenGVLab/InternVL3-9B** checkpoint uses its native `AutoModel`/`AutoTokenizer` interface and requires a separate Transformers **4.44.2** environment. With a CUDA-enabled PyTorch build installed in that environment, install `.[internvl]` instead of `.[inference]`. For example, from the repository root:
-
-```bash
-export CRVG_VERIFIER_PYTHON="$(command -v python)"
-python3.11 -m venv ../crvg-internvl
-../crvg-internvl/bin/python -m pip install -e ".[internvl]"
-../crvg-internvl/bin/python -m pip check
-export CRVG_BACKBONE_PYTHON="$(cd ../crvg-internvl/bin && pwd)/python"
-```
-
-The pipeline calls both interpreters automatically; no environment switching is needed between stages. InternVL uses dynamic image tiling and standard attention, without requiring FlashAttention. Converted `-hf` InternVL checkpoints are not interchangeable with the original checkpoint interface.
+This environment runs the frozen Qwen3 verifier, Grounding-DINO, the CRVG decision stage, and analysis using Transformers **4.57.6**. PaDT candidate generation is run with its native environment and imported through the cache interface below.
 
 ## Data
 
@@ -79,28 +67,15 @@ Evaluation splits: `refcoco_val`, `refcoco_testA`, `refcoco_testB`, `refcoco+_va
 
 ## Run CRVG
 
+First generate PaDT's greedy, BoN, and equivariant candidate caches with the original PaDT code. Convert the two output files for each split into CRVG's canonical cache format:
+
 ```bash
-export CRVG_MODEL=/models/InternVL3-9B
 export CRVG_QWEN3=/models/Qwen3-VL-8B-Instruct
 export CRVG_DINO=/models/grounding-dino-base
-export CRVG_DATA=/data/rec
 export CRVG_IMAGES=/data/coco/train2014
-export CRVG_LOGS=logs/internvl
+export CRVG_LOGS=logs/padt
 export CRVG_CONTROLLER=checkpoints/dino_three_domain_risk_controller
 
-GPU=0 DATASETS="refcoco_val" bash pipelines/run_internvl.sh --dry-run
-GPU=0 DATASETS="refcoco_val" bash pipelines/run_internvl.sh
-```
-
-For VLM-R1, set its checkpoint and use `pipelines/run_vlmr1.sh`. Run manifests record configuration, source-code hashes, and input/output hashes. Use `--rebuild` after changing checkpoint contents at the same path.
-
-`BACKBONE_BATCH_SIZE` (default **1**) controls the number of images per generation call in both BoN and ECE. `BATCH_SIZE` (default **4**) controls Qwen and DINO separately. Sampling generates eight completions per input, so increase the backbone batch size only when GPU memory permits. `BACKBONE_MAX_TOKENS`, `BACKBONE_SEED`, and `INTERNVL_MAX_TILES` default to 256, 42, and 12. When moving from InternVL to VLM-R1, unset `CRVG_BACKBONE_PYTHON` or point it to the Transformers 4.57.6 environment.
-
-### PaDT Candidate Input
-
-Generate the native PaDT BoN and equivariant caches, then convert them:
-
-```bash
 python -m tools.import_candidates --format padt --dataset refcoco_val \
   --base /data/padt/rec_results_refcoco_val.json \
   --ece /data/padt/equivariant_candidates_refcoco_val.json \
@@ -116,23 +91,20 @@ python -m crvg.pipeline --backbone padt --candidate-cache-dir /data/crvg-cache \
 
 Supply the greedy-initialized B0 and completed four-view evidence for every required input. The importer checks sample identity, source hashes, and matching current predictions.
 
+`BATCH_SIZE` controls Qwen and Grounding-DINO inference. Run manifests record commands and input, output, and source-code hashes; use `--rebuild` after replacing a checkpoint at the same path.
+
+### Optional Backbone Interfaces
+
+The repository also includes generation adapters for VLM-R1 and the original InternVL3 checkpoint interface. They implement the same candidate-cache contract but are not part of the PaDT experiment path described above. Their launchers are `pipelines/run_vlmr1.sh` and `pipelines/run_internvl.sh`; InternVL's native interface uses the `.[internvl]` dependency set.
+
 ## Released Decision Policy
 
-The final-stage policy was fitted once on difficult examples from the three REC training domains and is reused unchanged for every reported backbone. No backbone, Qwen verifier, or Grounding-DINO weight is updated. The released policy can be reconstructed from the accompanying TRAIN-only examples:
-
-```bash
-python -m crvg.controller.train \
-  --train artifacts/controller_data/dino_three_domain_risk_train.jsonl \
-  --val artifacts/controller_data/dino_three_domain_risk_calibration.jsonl \
-  --output-dir checkpoints/risk --device cpu
-```
-
-The reconstruction command exits with a nonzero status if the held-out TRAIN calibration checks fail. Labels and the acceptance rule follow Section 3.4 of the manuscript.
+The reported pipeline loads the fixed parameters in `checkpoints/dino_three_domain_risk_controller/` and applies them unchanged on every evaluation split. Ground-truth boxes are used only to compute reported metrics, never as decision features or prompt inputs. The feature order and acceptance rule are documented in the [method specification](docs/paper_alignment.md).
 
 ## Evaluation
 
 ```bash
-CRVG_LOGS=logs/internvl bash pipelines/run_analysis.sh
+CRVG_LOGS=logs/padt bash pipelines/run_analysis.sh
 ```
 
 Reports include Acc@0.50/0.75/0.90, mIoU, rescue/damage, and routing counts. **Average is the unweighted mean across the requested splits.**
@@ -143,10 +115,10 @@ Two offline analyses operate on cached run logs:
 - `analysis.threshold_sweep` scans a threshold grid over the cached evidence and reports covered combinations; combinations the cache does not cover are skipped and listed.
 
 ```bash
-python -m analysis.replay_thresholds --log-dir logs/internvl \
+python -m analysis.replay_thresholds --log-dir logs/padt \
   --datasets refcoco_val --gamma0 0.50 --gate 0.30 --gamma1 0.35 \
   --output-dir outputs/replay
-python -m analysis.threshold_sweep --log-dir logs/internvl \
+python -m analysis.threshold_sweep --log-dir logs/padt \
   --datasets refcoco_val --output-dir outputs/sensitivity
 ```
 
@@ -157,7 +129,7 @@ TRAIN_CACHE_DIR=/data/crvg-threshold-train \
   bash pipelines/run_training_threshold_selection.sh
 ```
 
-This produces JSON/CSV source data, a Markdown summary, a caption, and PDF/SVG/PNG figures in `outputs/training_threshold_selection`. The ECE caches must cover the largest scanned `gamma0`; the default figure scans through 0.95. This command performs offline selection only and does not train or fine-tune a model.
+This produces JSON/CSV source data, a Markdown summary, a caption, and PDF/SVG/PNG figures in `outputs/training_threshold_selection`. The ECE caches must cover the largest scanned `gamma0`; the default figure scans through 0.95. The script independently regenerates the TRAIN-only DINO route report and fails if the selected values do not reproduce `0.50/0.30/0.35`.
 
 ## Testing
 

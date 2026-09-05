@@ -4,14 +4,16 @@ import tempfile
 from pathlib import Path
 
 from analysis.training_threshold_selection import (
+    convert_dino_report,
     gain_selection_key,
-    declared_run,
     load_bundles,
     parse_floats,
+    same_threshold,
     summarize,
     sweep_gamma0,
     sweep_gate,
 )
+from analysis.dino_route_calibration import selection_key as dino_selection_key
 from crvg.utils.data import fingerprint, write_json
 
 
@@ -36,11 +38,31 @@ class TrainingThresholdSelectionTests(unittest.TestCase):
         unsafe = {**safe, "safe": False, "average_dacc50_pp": 10.0, "threshold": .1}
         self.assertIs(max((unsafe, safe), key=gain_selection_key), safe)
 
-    def test_declared_point_must_be_present(self):
-        runs = [{"threshold": .3}, {"threshold": .35}]
-        self.assertIs(declared_run(runs, .35, "gamma1"), runs[1])
-        with self.assertRaisesRegex(ValueError, "absent"):
-            declared_run(runs, .5, "gamma1")
+    def test_dino_selection_uses_overall_miou_after_net(self):
+        lower = {"safe": True, "net": 10, "damage": 1, "delta_miou": .03,
+                 "threshold": .3, "domain": {"refcoco": {"net": 4},
+                 "refcoco+": {"net": 0}, "refcocog": {"net": 6}}}
+        higher = {**lower, "delta_miou": .04, "threshold": .35}
+        self.assertIs(max((lower, higher), key=dino_selection_key), higher)
+
+    def test_dino_report_preserves_serialized_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dino.json"
+            def run(threshold, delta_miou):
+                domain = {name: {"n": 3, "delta_acc50": .01,
+                                  "delta_miou": .01, "rescue": 1,
+                                  "damage": 0, "net": 1}
+                          for name in ("refcoco", "refcoco+", "refcocog")}
+                return {"threshold": threshold, "n": 9, "switches": 3,
+                        "rescue": 3, "damage": 0, "net": 3,
+                        "delta_acc50": .01, "delta_miou": delta_miou,
+                        "safe": True, "domain": domain}
+            write_json(path, {"base_calibration_samples": 10,
+                              "selected_threshold": .35,
+                              "runs": [run(.3, .04), run(.35, .05)]})
+            runs, selected, _ = convert_dino_report(path)
+            self.assertEqual(len(runs), 2)
+            self.assertTrue(same_threshold(selected["threshold"], .35))
 
     def test_three_domain_cached_qwen_sweep(self):
         with tempfile.TemporaryDirectory() as directory:

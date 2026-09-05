@@ -12,12 +12,18 @@ from crvg.verification.qwen import load_qwen, token_variants, last_logits, add_q
 PROMPT = 'Look at the red box in this image. Does the red box correctly mark "{expr}"? Answer with only Yes or No.'
 
 
-def crop_with_context(image, box, context=.3):
+def crop_with_context(image, box, context=.3, min_size=28):
     x, y, w, h = box
-    if not valid_box(box):
+    if not valid_box(box) or w <= 1 or h <= 1:
         return image.copy()
-    left, top = max(0, int(x - w * context)), max(0, int(y - h * context))
-    right, bottom = min(image.width, int(x + w * (1 + context))), min(image.height, int(y + h * (1 + context)))
+    left = max(0, int(round(x - w * context)))
+    top = max(0, int(round(y - h * context)))
+    right = min(image.width, int(round(x + w * (1 + context))))
+    bottom = min(image.height, int(round(y + h * (1 + context))))
+    if right - left < min_size or bottom - top < min_size:
+        center_x, center_y = x + w / 2, y + h / 2
+        left, right = max(0, int(center_x - min_size)), min(image.width, int(center_x + min_size))
+        top, bottom = max(0, int(center_y - min_size)), min(image.height, int(center_y + min_size))
     if right <= left or bottom <= top:
         return image.copy()
     crop = image.crop((left, top, right, bottom))
