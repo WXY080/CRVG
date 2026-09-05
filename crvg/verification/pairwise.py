@@ -5,6 +5,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+from crvg.utils.bbox import iou_xywh
 from crvg.utils.data import read_json, write_json, results, current_candidate, row_image, extract_expression, fingerprint
 from crvg.verification.qwen import add_qwen_args, load_qwen, token_variants, last_logits
 from crvg.verification.render import render_pairwise_relation_montage, build_pairwise_relation_prompt
@@ -23,11 +24,22 @@ def aligned_scores(forward, reverse):
             "permutation_logit_gap": abs(fmargin-rmargin)}
 
 
+def select_challengers(row, current, distinct_iou=.85, max_challengers=8):
+    """DINO challengers distinct from the current box, best phrase score first."""
+    challengers = [candidate for candidate in row.get("candidates", [])
+                   if candidate.get("source") == "grounding_dino_phrase"
+                   and iou_xywh(current["bbox"], candidate["bbox"]) <= distinct_iou]
+    challengers.sort(key=lambda candidate: (float(candidate.get("dino_phrase_score", candidate.get("score", 0.))),
+                                            float(candidate.get("score", 0.))), reverse=True)
+    return challengers[:max_challengers]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("evidence")
     parser.add_argument("--save", required=True)
     parser.add_argument("--max-challengers", type=int, default=8)
+    parser.add_argument("--distinct-iou", type=float, default=.85)
     parser.add_argument("--context-scale", type=float, default=1.8)
     add_qwen_args(parser)
     args = parser.parse_args()
@@ -39,8 +51,7 @@ def main():
     records = []
     for row in tqdm(results(data), desc="Qwen pairwise"):
         current = current_candidate(row)
-        challengers = sorted([c for c in row["candidates"] if c.get("source") == "grounding_dino_phrase"],
-                              key=lambda c: c.get("dino_phrase_score", c.get("score", 0)), reverse=True)[:args.max_challengers]
+        challengers = select_challengers(row, current, args.distinct_iou, args.max_challengers)
         record = {"dataset_index": row["dataset_index"], "current": current, "challengers": [],
                   "status": "scored" if challengers else "no_dino_challenger"}
         if challengers:

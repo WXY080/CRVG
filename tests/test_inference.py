@@ -45,13 +45,13 @@ class InferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nonempty"):
             last_logits(None, None, [], [])
 
-    def test_dino_to_comparison_preserves_and_scores_all_challengers(self):
+    def test_dino_to_comparison_skips_near_current_challenger(self):
         row, _ = case()
         row["candidates"] = [{"bbox": A, "source": "current_system"},
                              {"bbox": C, "source": "sampled"}]
         row["crvg"].update(b1_count=2, b1_min_iou=0.)
         row["text"] = "object"
-        close = [.6, 0., 10., 10.]  # Nonduplicate, but overlaps the current box above 0.85.
+        close = [.6, 0., 10., 10.]  # Kept in the evidence pool at 0.92, but overlaps the current box above 0.85.
         proposals = [{"bbox": close, "score": .9}, {"bbox": B, "score": .8}]
         model = MagicMock()
         model.to.return_value = model
@@ -83,7 +83,8 @@ class InferenceTests(unittest.TestCase):
                         "--save", root / "evidence.json"])
             data = read_json(root / "evidence.json")
             self.assertEqual(data["meta"]["evidence_schema"], DINO_EVIDENCE_SCHEMA)
-            self.assertEqual(data["results"][0]["candidates"][:2][0]["bbox"], A)
+            self.assertEqual(data["results"][0]["candidates"][0]["bbox"], A)
+            self.assertIn(close, [c["bbox"] for c in data["results"][0]["candidates"]])
             self.assertEqual(data["results"][0]["crvg"], original["crvg"])
             self.assertEqual(data["results"][0]["target_detections"], proposals)
             model.requires_grad_.assert_called_once_with(False)
@@ -93,10 +94,10 @@ class InferenceTests(unittest.TestCase):
                         "--verifier-model", "synthetic-model", "--save", root / "picks.json"])
             picks = read_json(root / "picks.json")
             scored = picks["picks"][0]["challengers"]
-            self.assertEqual([c["bbox"] for c in scored], [close, B])
+            self.assertEqual([c["bbox"] for c in scored], [B])
             self.assertTrue(all(c["permutation_agree"] for c in scored))
             examples, _ = build_risk_examples(data, picks, "synthetic", require_train=True)
-            self.assertEqual(len(examples), 2)
+            self.assertEqual(len(examples), 1)
 
     def test_dino_empty_route_does_not_load_weights(self):
         row, _ = case()

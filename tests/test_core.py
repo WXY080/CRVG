@@ -19,8 +19,9 @@ from crvg.utils.bbox import iou_xywh, norm1000_to_pixel_xywh
 from crvg.utils.data import index_rows, fingerprint, set_prediction
 from crvg.verification.apply_gate import apply_crop
 from crvg.verification.crop_verifier import crop_with_context
-from crvg.verification.dino_detector import dino_route, proposal_pool
-from crvg.verification.pairwise import aligned_scores
+from crvg.verification.dino_detector import (dino_route, proposal_pool, normalized_phrase,
+                                             merge_detections, attach_phrase_scores)
+from crvg.verification.pairwise import aligned_scores, select_challengers
 from crvg.verification.render import render_pairwise_relation_montage
 from tools.merge_ece import merge
 from tests.fixtures import A, B, C, case, evidence, controller
@@ -125,7 +126,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(image.size,(960,750))
         self.assertIsNotNone(image.getbbox())
 
-    def test_dino_append_preserves_post_ece_candidates(self):
+    def test_dino_rebuilds_pool_at_append_threshold(self):
         row,_=case()
         near=[.3,0.,10.,10.]
         row["candidates"]=[{"bbox":A},{"bbox":near},{"bbox":C}]
@@ -133,8 +134,37 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(iou_xywh(A,near),.92)
         self.assertLess(iou_xywh(A,near),.95)
         pool=proposal_pool(row,[{"bbox":A,"score":.99},{"bbox":B,"score":.9}],max_challengers=1)
-        self.assertEqual([c["bbox"] for c in pool],[A,near,C,B])
+        self.assertEqual([c["bbox"] for c in pool],[A,C,B])
+        self.assertEqual(pool[0]["source"],"current_system")
         self.assertEqual(row["candidates"],before)
+
+    def test_dino_dual_phrase_merge_and_max_score(self):
+        self.assertEqual(normalized_phrase("  The dog. "),"the dog")
+        merged=merge_detections([{"bbox":[0.]*4,"score":.5}],[{"bbox":[1.]*4,"score":.9}])
+        self.assertEqual([d["score"] for d in merged],[.9,.5])
+        pool=[{"bbox":[0.,0.,5.,5.]},{"bbox":[40.,0.,5.,5.]}]
+        target=[{"bbox":[0.,0.,6.,6.],"score":.8}]
+        full=[{"bbox":[40.,0.,6.,6.],"score":.6}]
+        attach_phrase_scores(pool,target,full)
+        self.assertAlmostEqual(pool[0]["dino_phrase_score"],.8*25/36)
+        self.assertAlmostEqual(pool[1]["dino_phrase_score"],.6*25/36)
+        self.assertGreater(pool[1]["dino_full_score"],0.)
+        self.assertEqual(pool[0]["dino_target_score"],pool[0]["dino_phrase_score"])
+
+    def test_pairwise_skips_near_current_and_two_key_sort(self):
+        row,_=case()
+        near=[.5,0.,10.,10.]
+        self.assertGreater(iou_xywh(A,near),.85)
+        row["candidates"]=[{"bbox":A,"source":"current_system"},
+                           {"bbox":C,"source":"sampled"},
+                           {"bbox":B,"source":"grounding_dino_phrase","dino_phrase_score":.7},
+                           {"bbox":[65.,65.,10.,10.],"source":"grounding_dino_phrase",
+                            "dino_phrase_score":.7,"score":.9},
+                           {"bbox":near,"source":"grounding_dino_phrase","dino_phrase_score":.99}]
+        picked=select_challengers(row,{"bbox":list(A)})
+        self.assertEqual([c["bbox"] for c in picked],[[65.,65.,10.,10.],B])
+        self.assertEqual(select_challengers(row,{"bbox":list(A)},max_challengers=1)[0]["bbox"],
+                         [65.,65.,10.,10.])
 
     def test_dino_route_requires_upstream_state(self):
         row,_=case()

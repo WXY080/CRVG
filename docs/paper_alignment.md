@@ -22,7 +22,7 @@ Deduplication at IoU 0.95 retains original-sample IDs and distinct view IDs. Con
 
 `S(C) = 0.5 * distinct_views(C) + original_count(C)/len(B0) + current_in_C`.
 
-A challenger requires two transformed views and a score advantage of at least 0.25. Its representative maximizes weighted IoU to component members. Post-ECE consensus is recorded before DINO proposals are appended; DINO does not merge or remove B1 members.
+A challenger requires two transformed views and a score advantage of at least 0.25. Its representative maximizes weighted IoU to component members. Post-ECE consensus is recorded before DINO proposals are appended; the DINO stage then rebuilds the evidence pool at IoU 0.92 with the current box first, which can merge near-duplicate B1 members.
 
 ## Qwen Scoring
 
@@ -50,7 +50,7 @@ The reported path imports native PaDT greedy, stochastic, and equivariant candid
 
 Optional VLM-R1 and InternVL adapters implement the same candidate-cache contract for additional use cases. They are separate from the PaDT path and do not change the evidence-acquisition or decision stages specified here.
 
-The manuscript fixes the route thresholds, view transforms, clustering thresholds, model families, detection thresholds (0.20/0.20), and detection/challenger limits (12/8). Supplementary code settings include eight additional stochastic decodes, sampling temperature 1.3, DINO append-dedup IoU 0.92, and a 960x750 montage. Every appended challenger is compared; no further overlap filter removes it before comparison. The feature order and auxiliary confidence indicator are defined explicitly in FEATURE_NAMES and extract_feature_vector; these are part of the controller checkpoint contract.
+The manuscript fixes the route thresholds, view transforms, clustering thresholds, model families, detection thresholds (0.20/0.20), and detection/challenger limits (12/8). Supplementary code settings include eight additional stochastic decodes, sampling temperature 1.3, DINO append-dedup IoU 0.92, and a 960x750 montage. Detection queries the parsed target phrase and, when the full expression differs from it, the full expression as well; each pool candidate's phrase score is the better of the two detection matches. Pairwise comparison skips challengers overlapping the current box by more than 0.85 IoU. The feature order and auxiliary confidence indicator are defined explicitly in FEATURE_NAMES and extract_feature_vector; these are part of the controller checkpoint contract.
 
 Ablation overrides are recorded separately from the default configuration. Existing score files may be reused only when their source and processing contracts match. Backbone weights and benchmark data are obtained from their official sources; the frozen controller and the controller-development example lists are included in this repository.
 

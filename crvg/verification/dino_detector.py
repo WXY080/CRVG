@@ -7,7 +7,8 @@ from PIL import Image
 from tqdm import tqdm
 
 from crvg.utils.bbox import append_distinct, iou_xywh, min_pairwise_iou, xyxy_to_xywh
-from crvg.utils.data import read_json, write_json, results, row_image, current_candidate, extract_expression, fingerprint
+from crvg.utils.data import (read_json, write_json, results, row_image, current_bbox, current_iou,
+                             extract_expression, fingerprint)
 from crvg.verification.spatial import parse_spatial_plan, phrase_match_score, spatial_score
 from crvg.settings import DINO_EVIDENCE_SCHEMA
 
@@ -20,12 +21,17 @@ def dino_route(row, threshold):
             and min_pairwise_iou([c["bbox"] for c in row["candidates"]]) < threshold)
 
 
+def normalized_phrase(value):
+    return " ".join(str(value or "").strip().rstrip(".").lower().split())
+
+
 def proposal_pool(row, detections, max_challengers=8, duplicate_iou=.92):
-    """Append DINO boxes without deduplicating the already-formed B1 again."""
-    pool = copy.deepcopy(row["candidates"])
-    current = current_candidate(row)
-    if not any(c["bbox"] == current["bbox"] for c in pool):
-        pool.insert(0, current)
+    """Rebuild the pool at the append threshold with the current box first."""
+    pool = [{"bbox": current_bbox(row), "iou": current_iou(row), "source": "current_system"}]
+    for candidate in row.get("candidates", []):
+        item = copy.deepcopy(candidate)
+        item.setdefault("source", "existing_pool")
+        append_distinct(pool, item, duplicate_iou)
     added = 0
     for detection in detections:
         candidate = {**detection, "source": "grounding_dino_phrase",
@@ -34,6 +40,20 @@ def proposal_pool(row, detections, max_challengers=8, duplicate_iou=.92):
             added += 1
             if added >= max_challengers:
                 break
+    return pool
+
+
+def merge_detections(target, full):
+    return sorted([*target, *full], key=lambda item: item["score"], reverse=True)
+
+
+def attach_phrase_scores(pool, target_detections, full_detections):
+    for candidate in pool:
+        target_score = phrase_match_score(candidate["bbox"], target_detections)
+        full_score = phrase_match_score(candidate["bbox"], full_detections)
+        candidate["dino_target_score"] = target_score
+        candidate["dino_full_score"] = full_score
+        candidate["dino_phrase_score"] = max(target_score, full_score)
     return pool
 
 
@@ -80,27 +100,42 @@ def main():
         model.requires_grad_(False)
     for start in tqdm(range(0, len(queued), args.batch_size), desc="Grounding-DINO"):
         batch = queued[start:start+args.batch_size]
-        images, plans, phrases = [], [], []
+        images, plans, phrases, exprs = [], [], [], []
         for row in batch:
             with Image.open(row_image(row, args.image_root)) as raw:
                 images.append(raw.convert("RGB"))
             expr = extract_expression(row)
+            exprs.append(expr)
             plan = parse_spatial_plan(expr)
             plans.append(plan)
             phrases.append(plan["target_phrase"] if plan and plan["target_phrase"] else expr)
-        detections = detect(model, processor, images, phrases, args.device, args.box_threshold, args.text_threshold)
-        detections = [found[:args.max_detections] for found in detections]
+        target_sets = [found[:args.max_detections] for found in
+                       detect(model, processor, images, phrases, args.device,
+                              args.box_threshold, args.text_threshold)]
+        full_positions = [i for i in range(len(batch))
+                          if normalized_phrase(exprs[i]) != normalized_phrase(phrases[i])]
+        full_sets = [[] for _ in batch]
+        if full_positions:
+            raw_full = detect(model, processor, [images[i] for i in full_positions],
+                              [exprs[i] for i in full_positions], args.device,
+                              args.box_threshold, args.text_threshold)
+            for i, found in zip(full_positions, raw_full):
+                full_sets[i] = found[:args.max_detections]
+        merged = [merge_detections(target, full)
+                  for target, full in zip(target_sets, full_sets)]
         anchor_idx = [i for i, plan in enumerate(plans) if plan and plan["requires_anchor"]]
         anchors = detect(model, processor, [images[i] for i in anchor_idx],
                          [plans[i]["anchor_phrase"] for i in anchor_idx], args.device, args.box_threshold, args.text_threshold)
         by_anchor = dict(zip(anchor_idx, [found[:args.max_detections] for found in anchors]))
-        for i, (row, image, found) in enumerate(zip(batch, images, detections)):
-            pool = proposal_pool(row, found, args.max_tool_candidates, args.duplicate_iou)
+        for i, (row, image) in enumerate(zip(batch, images)):
+            pool = attach_phrase_scores(
+                proposal_pool(row, merged[i], args.max_tool_candidates, args.duplicate_iou),
+                target_sets[i], full_sets[i])
             for candidate in pool:
-                candidate["dino_phrase_score"] = phrase_match_score(candidate["bbox"], found)
                 candidate["spatial_skill_score"] = spatial_score(candidate["bbox"], by_anchor.get(i, []), plans[i], image.size)
             output_rows.append({**row, "image_size": list(image.size), "candidates": pool,
-                                "relation_plan": plans[i], "target_detections": found,
+                                "relation_plan": plans[i], "target_detections": target_sets[i],
+                                "full_detections": full_sets[i],
                                 "anchor_confidence": max((c["score"] for c in by_anchor.get(i, [])), default=0.),
                                 "target_phrase": phrases[i]})
     write_json(args.save, {"meta": {**data.get("meta", {}), "source_sha256": fingerprint(data),
