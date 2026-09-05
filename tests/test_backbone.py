@@ -23,6 +23,7 @@ class Processor:
     def __init__(self):
         self.tokenizer = SimpleNamespace(padding_side="right")
         self.batches = []
+        self.grid_override = None
 
     def apply_chat_template(self, messages, **kwargs):
         return messages[0]["content"][1]["text"]
@@ -34,7 +35,11 @@ class Processor:
                             [image.getpixel((0, 0))[0]]) for prompt, image in zip(text, images)]
         width = max(len(row) for row in ids)
         input_ids = torch.stack([torch.nn.functional.pad(row, (width - len(row), 0)) for row in ids])
-        batch = TensorBatch(input_ids=input_ids, attention_mask=(input_ids != 0).long())
+        grid = self.grid_override
+        if grid is None:
+            grid = [[1, image.height // 14, image.width // 14] for image in images]
+        batch = TensorBatch(input_ids=input_ids, attention_mask=(input_ids != 0).long(),
+                            image_grid_thw=torch.tensor(grid))
         self.batches.append(batch)
         return batch
 
@@ -48,7 +53,8 @@ class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.ones(1))
-        self.config = SimpleNamespace(force_image_size=8, vision_config=SimpleNamespace(image_size=8),
+        self.config = SimpleNamespace(force_image_size=8,
+                                      vision_config=SimpleNamespace(image_size=8, patch_size=14),
                                       dynamic_image_size=True, use_thumbnail=True)
         self.generation_config = SimpleNamespace(bos_token_id=1, eos_token_id=2, pad_token_id=0,
                                                  top_p=.2, num_beams=5, forced_bos_token_id=99)
@@ -66,7 +72,7 @@ class Model(torch.nn.Module):
     def language_model(self):
         return self
 
-    def generate(self, input_ids, attention_mask, **kwargs):
+    def generate(self, input_ids, attention_mask, image_grid_thw=None, **kwargs):
         self.calls.append(kwargs)
         n = kwargs["num_return_sequences"]
         expanded = input_ids.repeat_interleave(n, dim=0)
@@ -121,6 +127,14 @@ class BackboneTests(unittest.TestCase):
         self.assertEqual(len(result), 4)
         self.assertEqual([len(batch["input_ids"]) for batch in processor.batches], [2, 2])
         self.assertTrue(all(not call["do_sample"] and call["num_return_sequences"] == 1 for call in model.calls))
+
+    def test_vlmr1_boxes_are_restored_to_original_image_coordinates(self):
+        module, _, processor = factories()
+        processor.grid_override = [[1, 2, 2]]
+        with patch.dict(sys.modules, {"transformers": module}):
+            engine = BackboneEngine("synthetic", "vlmr1")
+        output = engine.predict([Image.new("RGB", (56, 84), (1, 0, 0))], ["object"])
+        self.assertEqual(output[0][0]["bbox"], [20.0, 0.0, 20.0, 30.0])
 
     def test_original_internvl_uses_native_loader_and_tiled_batch_chat(self):
         module, model, processor = factories("4.44.2")

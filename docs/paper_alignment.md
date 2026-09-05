@@ -30,7 +30,7 @@ The exact crop prompt is `PROMPT` in crop_verifier.py. The processor receives a 
 
 The exact comparison prompt is `build_pairwise_relation_prompt`. A montage contains the full scene, shared two-box context, and detail views. Answers are next-token labels **1/2**. Each label uses the maximum logit among its single-token variants. Reverse-order logits are aligned to current/challenger, averaged, then normalized by a two-label softmax. The advantage is `P(challenger)-P(current)`. Order agreement requires a strict preference for the same physical box in both orders; a tie is not a preference.
 
-## Risk Policy
+## Risk-Aware Termination
 
 The controller uses comparison, detection, geometry, consensus, expression/anchor cues, and domain indicators. It does not read ground truth or backbone hidden states as features. Its utility is:
 
@@ -38,11 +38,15 @@ The controller uses comparison, detection, geometry, consensus, expression/ancho
 
 Select the highest-utility challenger, then require both `u >= saved_threshold` and order agreement. Accepted decisions are SWITCH. When acceptance fails, a KEEP class preference is recorded as KEEP; otherwise the controller abstains. No-challenger cases are ABSTAIN; inputs that never enter this stage are NOT_INVOKED. Neither case changes the current prediction.
 
-Controller labels follow Section 3.4: SWITCH corrects an Acc@0.50 error or improves an already-correct box by at least 0.15 IoU; KEEP is the symmetric adverse case; other pairs are ABSTAIN. The controller is fitted once on 3,502 difficult cases mined from the PaDT-REC-3B TRAIN domains, with 799 training-only cases used for policy selection, and transferred with unchanged weights, normalization, costs, and threshold.
+Labels follow Section 3.4: SWITCH corrects an Acc@0.50 error or improves an already-correct box by at least 0.15 IoU; KEEP is the symmetric adverse case; other pairs are ABSTAIN. The released policy uses 3,502 current-challenger examples from 1,282 difficult TRAIN inputs, with 799 examples from 290 held-out TRAIN inputs used for policy selection. Its weights, normalization, costs, and threshold are then transferred unchanged.
+
+## Threshold Selection
+
+The operating values `gamma0=0.50`, `deltaQ=0.30`, and `gamma1=0.35` are selected from difficult TRAIN examples only. The Qwen margin is first chosen on a broad `gamma0=0.75` route with changed-box interventions limited to 10%. With that margin frozen, the cascade-entry threshold maximizes average gain across the three REC training domains under non-negative average mIoU and per-domain net-correction constraints. The DINO route threshold is selected independently on the held-out TRAIN calibration examples. `analysis.training_threshold_selection` reproduces the numeric curves and the three-panel figure; `analysis.threshold_sweep` is a separate report-only evaluation sensitivity analysis.
 
 ## Implementation Settings
 
-VLM-R1 uses `AutoModelForImageTextToText` with a left-padded processor batch. Original InternVL3-9B uses `AutoModel`, its native `batch_chat`, and ImageNet-normalized dynamic tiles (up to 12 tiles plus a thumbnail). It runs in the dedicated Transformers 4.44.2 environment; VLM-R1 and the evidence models use 4.57.6. Both interfaces implement the same image-major `predict()` output contract.
+VLM-R1 uses `AutoModelForImageTextToText` with a left-padded processor batch. Its predicted xyxy coordinates are defined on the processor image grid and are rescaled to each original image before conversion to pixel xywh. Original InternVL3-9B uses `AutoModel`, its native `batch_chat`, and ImageNet-normalized dynamic tiles (up to 12 tiles plus a thumbnail). It runs in the dedicated Transformers 4.44.2 environment; VLM-R1 and the evidence models use 4.57.6. Both interfaces implement the same image-major `predict()` output contract.
 
 Backbone generation uses one beam and a repetition penalty of 1. Greedy decoding disables sampling; stochastic decoding sets temperature 1.3, top-p 1, and top-k 0. Input microbatches default to one image and also bound ECE view batches. Generation settings and seeds are recorded in the pipeline commands; matching seeds do not imply identical outputs across engines or batching configurations.
 

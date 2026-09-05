@@ -2,24 +2,24 @@
 
 Official implementation of **Knowing When to Intervene: Consensus-Routed Evidence Acquisition for Risk-Aware Visual Grounding**.
 
-CRVG is a selective post-hoc intervention for referring expression comprehension. The grounding backbone, the Qwen3-VL-8B-Instruct verifier, and Grounding-DINO-base all stay frozen; CRVG routes only low-consensus samples through extra evidence acquisition and a risk-aware switch decision.
-
-## Released Artifacts
-
-| Path | Contents |
-| --- | --- |
-| `checkpoints/dino_three_domain_risk_controller/` | Frozen risk controller used in the reported experiments: `risk_controller.pt` (weights) and `risk_controller_config.json` (36-D feature schema, normalization, utility costs, acceptance threshold, policy). |
-| `artifacts/controller_data/dino_three_domain_risk_train.jsonl` | 3,502 difficult examples used for controller fitting. |
-| `artifacts/controller_data/dino_three_domain_risk_calibration.jsonl` | 799 training-only examples used for policy selection (images disjoint from the fitting set). |
-| `artifacts/controller_data/dino_three_domain_risk_audit.json` | Statistics of the two controller-development sets. |
+CRVG is a selective post-hoc intervention for referring expression comprehension. It diagnoses candidate agreement, acquires additional evidence only for ambiguous inputs, and preserves the current prediction unless a challenger passes the corresponding confidence and risk checks. The grounding backbone, Qwen3-VL-8B-Instruct, and Grounding-DINO-base remain frozen.
 
 ## Method Overview
 
 1. **Routing.** One greedy prediction and eight stochastic decodes form the candidate pool B0. The cascade preserves the current prediction unless B0 holds at least two candidates with minimum pairwise IoU below **0.50**; otherwise equivariant views (horizontal flip plus three padded canvases) may challenge and update the current box.
 2. **Evidence acquisition.** A frozen Qwen3-VL scores red-box crops and replaces the current box when the probability advantage exceeds **0.30**; if post-expansion consensus stays below **0.35**, Grounding-DINO appends up to eight external proposals, and every challenger is compared with the current box in both orders.
-3. **Risk-aware termination.** A frozen 36-feature controller predicts KEEP/SWITCH/ABSTAIN. The prediction is replaced only by an order-consistent challenger whose utility clears the saved threshold; KEEP and ABSTAIN both preserve it.
+3. **Risk-aware termination.** Pairwise evidence, candidate geometry, detector confidence, and consensus state determine whether to keep the current box, switch to a challenger, or abstain. A switch is accepted only when it is order-consistent and clears the frozen utility threshold.
 
 Default thresholds **gamma0=0.50 / gate=0.30 / gamma1=0.35** live in [configs/default.yaml](configs/default.yaml). Score definitions, the equation-to-code map, clustering and medoid details, and implementation settings are in the [method specification](docs/paper_alignment.md).
+
+## Released Artifacts
+
+| Path | Contents |
+| --- | --- |
+| `checkpoints/dino_three_domain_risk_controller/` | Frozen final-stage decision policy used in the reported experiments. |
+| `artifacts/controller_data/dino_three_domain_risk_train.jsonl` | 3,502 current-challenger examples from 1,282 difficult TRAIN inputs. |
+| `artifacts/controller_data/dino_three_domain_risk_calibration.jsonl` | 799 examples from 290 held-out TRAIN inputs used for policy selection. |
+| `artifacts/controller_data/dino_three_domain_risk_audit.json` | Data composition and integrity statistics. |
 
 ## Installation
 
@@ -116,9 +116,9 @@ python -m crvg.pipeline --backbone padt --candidate-cache-dir /data/crvg-cache \
 
 Supply the greedy-initialized B0 and completed four-view evidence for every required input. The importer checks sample identity, source hashes, and matching current predictions.
 
-## Risk Controller
+## Released Decision Policy
 
-The released controller was fitted once on difficult cases mined from the three TRAIN domains using PaDT-REC-3B, then frozen; the same directory is reused unchanged on every backbone. To refit from the released controller-development data:
+The final-stage policy was fitted once on difficult examples from the three REC training domains and is reused unchanged for every reported backbone. No backbone, Qwen verifier, or Grounding-DINO weight is updated. The released policy can be reconstructed from the accompanying TRAIN-only examples:
 
 ```bash
 python -m crvg.controller.train \
@@ -127,7 +127,7 @@ python -m crvg.controller.train \
   --output-dir checkpoints/risk --device cpu
 ```
 
-Training exits with a nonzero status if calibration fails. Controller-development data can also be regenerated end to end: acquire evidence from the three TRAIN domains using PaDT-REC-3B with `--stop-after pairwise`, then partition and build with `crvg.controller.build_data`; labels follow Section 3.4 of the manuscript.
+The reconstruction command exits with a nonzero status if the held-out TRAIN calibration checks fail. Labels and the acceptance rule follow Section 3.4 of the manuscript.
 
 ## Evaluation
 
@@ -150,6 +150,15 @@ python -m analysis.threshold_sweep --log-dir logs/internvl \
   --datasets refcoco_val --output-dir outputs/sensitivity
 ```
 
+The paper's threshold-selection figure is a separate TRAIN-only analysis. Point `TRAIN_CACHE_DIR` to the aligned difficult-TRAIN BoN, broad-ECE, and frozen-Qwen caches for `refcoco_train`, `refcoco+_train`, and `refcocog_train`:
+
+```bash
+TRAIN_CACHE_DIR=/data/crvg-threshold-train \
+  bash pipelines/run_training_threshold_selection.sh
+```
+
+This produces JSON/CSV source data, a Markdown summary, a caption, and PDF/SVG/PNG figures in `outputs/training_threshold_selection`. The ECE caches must cover the largest scanned `gamma0`; the default figure scans through 0.95. This command performs offline selection only and does not train or fine-tune a model.
+
 ## Testing
 
 ```bash
@@ -159,6 +168,7 @@ python -m compileall -q crvg analysis tools tests
 bash -n pipelines/run_internvl.sh
 bash -n pipelines/run_vlmr1.sh
 bash -n pipelines/run_analysis.sh
+bash -n pipelines/run_training_threshold_selection.sh
 ```
 
 The CPU suite covers method contracts and cached workflows with synthetic fixtures; it does not load real model checkpoints. GPU steps and coverage details are in the [testing guide](docs/testing.md).
